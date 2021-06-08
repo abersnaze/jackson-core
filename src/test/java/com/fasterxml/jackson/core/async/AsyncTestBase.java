@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import com.fasterxml.jackson.core.*;
 import com.fasterxml.jackson.core.testsupport.AsyncReaderWrapper;
 import com.fasterxml.jackson.core.testsupport.AsyncReaderWrapperForByteArray;
+import com.fasterxml.jackson.core.testsupport.AsyncReaderWrapperForByteBuffer;
 
 public abstract class AsyncTestBase extends BaseTest
 {
