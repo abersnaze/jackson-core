@@ -45,6 +45,21 @@ public class NonBlockingJsonParser
     protected byte[] _inputBuffer = NO_BYTES;
 
     /**
+     * Whether or not _inputBuffer contains at least amount
+     * bytes left unread. In the future _inputPtr and _inputEnd
+     * could be changed during the processing to incorporate
+     * additional data from a ByteBuffer that is too large to
+     * fit in memory all at once.
+     *
+     * @param amount
+     * @return true if _inputPtr can be increased by amount
+     * without going past _inputEnd after this call returns.
+     */
+    private boolean _hasAvailable(int amount) {
+        return _inputPtr + amount <= _inputEnd;
+    }
+
+    /**
      * In addition to current buffer pointer, and end pointer,
      * we will also need to know number of bytes originally
      * contained. This is needed to correctly update location
@@ -81,14 +96,14 @@ public class NonBlockingJsonParser
 
     @Override
     public final boolean needMoreInput() {
-        return (_inputPtr >=_inputEnd) && !_endOfInput;
+        return !_hasAvailable(1) && !_endOfInput;
     }
 
     @Override
     public void feedInput(byte[] buf, int start, int end) throws JacksonException
     {
         // Must not have remaining input
-        if (_inputPtr < _inputEnd) {
+        if (_hasAvailable(1)) {
             _reportError("Still have %d undecoded bytes, should not call 'feedInput'", _inputEnd - _inputPtr);
         }
         if (end < start) {
@@ -136,6 +151,7 @@ public class NonBlockingJsonParser
 
     @Override
     public int releaseBuffered(OutputStream out) throws JacksonException {
+        _hasAvailable(0);
         int avail = _inputEnd - _inputPtr;
         if (avail > 0) {
             try {
@@ -166,7 +182,7 @@ public class NonBlockingJsonParser
     {
         // First: regardless of where we really are, need at least one more byte;
         // can simplify some of the checks by short-circuiting right away
-        if (_inputPtr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             if (_closed) {
                 return null;
             }
@@ -466,7 +482,7 @@ public class NonBlockingJsonParser
                     _throwInvalidSpace(ch);
                 }
             }
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_ROOT_GOT_SEPARATOR;
                 if (_closed) {
                     return null;
@@ -488,7 +504,7 @@ public class NonBlockingJsonParser
         // public final static byte UTF8_BOM_2 = (byte) 0xBB;
         // public final static byte UTF8_BOM_3 = (byte) 0xBF;
 
-        while (_inputPtr < _inputEnd) {
+        while (_hasAvailable(1)) {
             int ch = _inputBuffer[_inputPtr++] & 0xFF;
             switch (bytesHandled) {
             case 3:
@@ -542,7 +558,7 @@ public class NonBlockingJsonParser
             return _handleOddName(ch);
         }
         // First: can we optimize out bounds checks?
-        if ((_inputPtr + 13) <= _inputEnd) { // Need up to 12 chars, plus one trailing (quote)
+        if (_hasAvailable(13)) { // Need up to 12 chars, plus one trailing (quote)
             String n = _fastParseName();
             if (n != null) {
                 return _fieldComplete(n);
@@ -574,7 +590,7 @@ public class NonBlockingJsonParser
             _reportUnexpectedChar(ch, "was expecting comma to separate "+_streamReadContext.typeDesc()+" entries");
         }
         int ptr = _inputPtr;
-        if (ptr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _minorState = MINOR_PROPERTY_LEADING_WS;
             return (_currToken = JsonToken.NOT_AVAILABLE);
         }
@@ -597,7 +613,7 @@ public class NonBlockingJsonParser
             return _handleOddName(ch);
         }
         // First: can we optimize out bounds checks?
-        if ((_inputPtr + 13) <= _inputEnd) { // Need up to 12 chars, plus one trailing (quote)
+        if (_hasAvailable(13)) { // Need up to 12 chars, plus one trailing (quote)
             String n = _fastParseName();
             if (n != null) {
                 return _fieldComplete(n);
@@ -715,7 +731,7 @@ public class NonBlockingJsonParser
         _streamReadContext.expectComma();
 
         int ptr = _inputPtr;
-        if (ptr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _minorState = MINOR_VALUE_WS_AFTER_COMMA;
             return (_currToken = JsonToken.NOT_AVAILABLE);
         }
@@ -803,7 +819,7 @@ public class NonBlockingJsonParser
             _reportUnexpectedChar(ch, "was expecting a colon to separate property name and value");
         }
         int ptr = _inputPtr;
-        if (ptr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _minorState = MINOR_VALUE_LEADING_WS;
             return (_currToken = JsonToken.NOT_AVAILABLE);
         }
@@ -982,7 +998,7 @@ public class NonBlockingJsonParser
                     _throwInvalidSpace(ch);
                 }
             }
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _currToken = JsonToken.NOT_AVAILABLE;
                 return 0;
             }
@@ -998,7 +1014,7 @@ public class NonBlockingJsonParser
         }
 
         // After that, need to verify if we have c/c++ comment
-        if (_inputPtr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _pending32 = fromMinorState;
             _minorState = MINOR_COMMENT_LEADING_SLASH;
             return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -1021,7 +1037,7 @@ public class NonBlockingJsonParser
             _reportUnexpectedChar('#', "maybe a (non-standard) comment? (not recognized as one since Feature 'ALLOW_YAML_COMMENTS' not enabled for parser)");
         }
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_COMMENT_YAML;
                 _pending32 = fromMinorState;
                 return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -1047,7 +1063,7 @@ public class NonBlockingJsonParser
     private final JsonToken _finishCppComment(int fromMinorState) throws JacksonException
     {
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_COMMENT_CPP;
                 _pending32 = fromMinorState;
                 return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -1073,7 +1089,7 @@ public class NonBlockingJsonParser
     private final JsonToken _finishCComment(int fromMinorState, boolean gotStar) throws JacksonException
     {
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = gotStar ? MINOR_COMMENT_CLOSING_ASTERISK : MINOR_COMMENT_C;
                 _pending32 = fromMinorState;
                 return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -1105,7 +1121,7 @@ public class NonBlockingJsonParser
     private final JsonToken _startAfterComment(int fromMinorState) throws JacksonException
     {
         // Ok, then, need one more character...
-        if (_inputPtr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _minorState = fromMinorState;
             return (_currToken = JsonToken.NOT_AVAILABLE);
         }
@@ -1138,7 +1154,7 @@ public class NonBlockingJsonParser
     protected JsonToken _startFalseToken() throws JacksonException
     {
         int ptr = _inputPtr;
-        if ((ptr + 4) < _inputEnd) { // yes, can determine efficiently
+        if (_hasAvailable(5)) { // yes, can determine efficiently
             byte[] buf = _inputBuffer;
             if ((buf[ptr++] == 'a') 
                    && (buf[ptr++] == 'l')
@@ -1158,7 +1174,7 @@ public class NonBlockingJsonParser
     protected JsonToken _startTrueToken() throws JacksonException
     {
         int ptr = _inputPtr;
-        if ((ptr + 3) < _inputEnd) { // yes, can determine efficiently
+        if (_hasAvailable(4)) { // yes, can determine efficiently
             byte[] buf = _inputBuffer;
             if ((buf[ptr++] == 'r') 
                    && (buf[ptr++] == 'u')
@@ -1177,7 +1193,7 @@ public class NonBlockingJsonParser
     protected JsonToken _startNullToken() throws JacksonException
     {
         int ptr = _inputPtr;
-        if ((ptr + 3) < _inputEnd) { // yes, can determine efficiently
+        if (_hasAvailable(4)) { // yes, can determine efficiently
             byte[] buf = _inputBuffer;
             if ((buf[ptr++] == 'u') 
                    && (buf[ptr++] == 'l')
@@ -1199,7 +1215,7 @@ public class NonBlockingJsonParser
         final int end = expToken.length();
 
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _pending32 = matched;
                 return (_currToken = JsonToken.NOT_AVAILABLE);
             }
@@ -1237,7 +1253,7 @@ public class NonBlockingJsonParser
         final int end = expToken.length();
 
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _nonStdTokenType = type;
                 _pending32 = matched;
                 _minorState = MINOR_VALUE_TOKEN_NON_STD;
@@ -1273,7 +1289,7 @@ public class NonBlockingJsonParser
 
     protected JsonToken _finishErrorToken() throws JacksonException
     {
-        while (_inputPtr < _inputEnd) {
+        while (_hasAvailable(1)) {
             int i = (int) _inputBuffer[_inputPtr++];
 
 // !!! TODO: Decode UTF-8 characters properly...
@@ -1327,7 +1343,7 @@ public class NonBlockingJsonParser
         char[] outBuf = _textBuffer.emptyAndGetCurrentSegment();
         outBuf[0] = (char) ch;
         // in unlikely event of not having more input, denote location
-        if (_inputPtr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _minorState = MINOR_NUMBER_INTEGER_DIGITS;
             _textBuffer.setCurrentLength(1);
             return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -1359,7 +1375,8 @@ public class NonBlockingJsonParser
                 outBuf = _textBuffer.expandCurrentSegment();
             }
             outBuf[outPtr++] = (char) ch;
-            if (++_inputPtr >= _inputEnd) {
+            _inputPtr++;
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_NUMBER_INTEGER_DIGITS;
                 _textBuffer.setCurrentLength(outPtr);
                 return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -1374,7 +1391,7 @@ public class NonBlockingJsonParser
     protected JsonToken _startNegativeNumber() throws JacksonException
     {
         _numberNegative = true;
-        if (_inputPtr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _minorState = MINOR_NUMBER_MINUS;
             return (_currToken = JsonToken.NOT_AVAILABLE);
         }
@@ -1394,7 +1411,7 @@ public class NonBlockingJsonParser
         char[] outBuf = _textBuffer.emptyAndGetCurrentSegment();
         outBuf[0] = '-';
         outBuf[1] = (char) ch;
-        if (_inputPtr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _minorState = MINOR_NUMBER_INTEGER_DIGITS;
             _textBuffer.setCurrentLength(2);
             _intLength = 1;
@@ -1425,7 +1442,8 @@ public class NonBlockingJsonParser
                 outBuf = _textBuffer.expandCurrentSegment();
             }
             outBuf[outPtr++] = (char) ch;
-            if (++_inputPtr >= _inputEnd) {
+            ++_inputPtr;
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_NUMBER_INTEGER_DIGITS;
                 _textBuffer.setCurrentLength(outPtr);
                 return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -1440,7 +1458,7 @@ public class NonBlockingJsonParser
     protected JsonToken _startNumberLeadingZero() throws JacksonException
     {
         int ptr = _inputPtr;
-        if (ptr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _minorState = MINOR_NUMBER_ZERO;
             return (_currToken = JsonToken.NOT_AVAILABLE);
         }
@@ -1507,7 +1525,7 @@ public class NonBlockingJsonParser
         // In general, skip further zeroes (if allowed), look for legal follow-up
         // numeric characters; likely legal separators, or, known illegal (letters).
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_NUMBER_ZERO;
                 return (_currToken = JsonToken.NOT_AVAILABLE);
             }
@@ -1558,7 +1576,7 @@ public class NonBlockingJsonParser
         // In general, skip further zeroes (if allowed), look for legal follow-up
         // numeric characters; likely legal separators, or, known illegal (letters).
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_NUMBER_MINUSZERO;
                 return (_currToken = JsonToken.NOT_AVAILABLE);
             }
@@ -1612,7 +1630,7 @@ public class NonBlockingJsonParser
         int negMod = _numberNegative ? -1 : 0;
 
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_NUMBER_INTEGER_DIGITS;
                 _textBuffer.setCurrentLength(outPtr);
                 return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -1656,7 +1674,7 @@ public class NonBlockingJsonParser
             }
             outBuf[outPtr++] = '.';
             while (true) {
-                if (_inputPtr >= _inputEnd) {
+                if (!_hasAvailable(1)) {
                     _textBuffer.setCurrentLength(outPtr);
                     _minorState = MINOR_NUMBER_FRACTION_DIGITS;
                     _fractLength = fractLen;
@@ -1685,7 +1703,7 @@ public class NonBlockingJsonParser
                 outBuf = _textBuffer.expandCurrentSegment();
             }
             outBuf[outPtr++] = (char) ch;
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _textBuffer.setCurrentLength(outPtr);
                 _minorState = MINOR_NUMBER_EXPONENT_MARKER;
                 _expLength = 0;
@@ -1697,7 +1715,7 @@ public class NonBlockingJsonParser
                     outBuf = _textBuffer.expandCurrentSegment();
                 }
                 outBuf[outPtr++] = (char) ch;
-                if (_inputPtr >= _inputEnd) {
+                if (!_hasAvailable(1)) {
                     _textBuffer.setCurrentLength(outPtr);
                     _minorState = MINOR_NUMBER_EXPONENT_DIGITS;
                     _expLength = 0;
@@ -1711,7 +1729,7 @@ public class NonBlockingJsonParser
                     outBuf = _textBuffer.expandCurrentSegment();
                 }
                 outBuf[outPtr++] = (char) ch;
-                if (_inputPtr >= _inputEnd) {
+                if (!_hasAvailable(1)) {
                     _textBuffer.setCurrentLength(outPtr);
                     _minorState = MINOR_NUMBER_EXPONENT_DIGITS;
                     _expLength = expLen;
@@ -1747,7 +1765,7 @@ public class NonBlockingJsonParser
                 outBuf = _textBuffer.expandCurrentSegment();
             }
             outBuf[outPtr++] = (char) ch;
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _textBuffer.setCurrentLength(outPtr);
                 _fractLength = fractLen;
                 return JsonToken.NOT_AVAILABLE;
@@ -1766,7 +1784,7 @@ public class NonBlockingJsonParser
         if (ch == INT_e || ch == INT_E) { // exponent?
             _textBuffer.append((char) ch);
             _expLength = 0;
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_NUMBER_EXPONENT_MARKER;
                 return JsonToken.NOT_AVAILABLE;
             }
@@ -1788,7 +1806,7 @@ public class NonBlockingJsonParser
             _minorState = MINOR_NUMBER_EXPONENT_DIGITS;
             if (ch == INT_MINUS || ch == INT_PLUS) {
                 _textBuffer.append((char) ch);
-                if (_inputPtr >= _inputEnd) {
+                if (!_hasAvailable(1)) {
                     _minorState = MINOR_NUMBER_EXPONENT_DIGITS;
                     _expLength = 0;
                     return JsonToken.NOT_AVAILABLE;
@@ -1807,7 +1825,7 @@ public class NonBlockingJsonParser
                 outBuf = _textBuffer.expandCurrentSegment();
             }
             outBuf[outPtr++] = (char) ch;
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _textBuffer.setCurrentLength(outPtr);
                 _expLength = expLen;
                 return JsonToken.NOT_AVAILABLE;
@@ -1994,7 +2012,7 @@ public class NonBlockingJsonParser
         final int[] codes = _icLatin1;
 
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _quadLength = qlen;
                 _pending32 = currQuad;
                 _pendingBytes = currQuadBytes;
@@ -2153,7 +2171,7 @@ public class NonBlockingJsonParser
         // Ok, now; instead of ultra-optimizing parsing here (as with regular JSON names),
         // let's just use the generic "slow" variant. Can measure its impact later on if need be.
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _quadLength = qlen;
                 _pending32 = currQuad;
                 _pendingBytes = currQuadBytes;
@@ -2199,7 +2217,7 @@ public class NonBlockingJsonParser
         final int[] codes = _icLatin1;
 
         while (true) {
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _quadLength = qlen;
                 _pending32 = currQuad;
                 _pendingBytes = currQuadBytes;
@@ -2343,7 +2361,7 @@ public class NonBlockingJsonParser
 
     private int _decodeSplitEscaped(int value, int bytesRead) throws JacksonException
     {
-        if (_inputPtr >= _inputEnd) {
+        if (!_hasAvailable(1)) {
             _quoted32 = value;
             _quotedDigits = bytesRead;
             return -1;
@@ -2380,7 +2398,7 @@ public class NonBlockingJsonParser
                     return _handleUnrecognizedCharacterEscape(ch);
                 }
             }
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _quotedDigits = 0;
                 _quoted32 = 0;
                 return -1;
@@ -2398,7 +2416,7 @@ public class NonBlockingJsonParser
             if (++bytesRead == 4) {
                 return value;
             }
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _quotedDigits = bytesRead;
                 _quoted32 = value;
                 return -1;
@@ -2415,28 +2433,24 @@ public class NonBlockingJsonParser
 
     protected JsonToken _startString() throws JacksonException
     {
-        int ptr = _inputPtr;
         int outPtr = 0;
         char[] outBuf = _textBuffer.emptyAndGetCurrentSegment();
         final int[] codes = _icUTF8;
 
-        final int max = Math.min(_inputEnd, (ptr + outBuf.length));
-        final byte[] inputBuffer = _inputBuffer;
-        while (ptr < max) {
-            int c = (int) inputBuffer[ptr] & 0xFF;
+        while (_hasAvailable(1) && outPtr < outBuf.length) {
+            int c = (int) _inputBuffer[_inputPtr] & 0xFF;
             if (codes[c] != 0) {
                 if (c == INT_QUOTE) {
-                    _inputPtr = ptr+1;
+                    _inputPtr++;
                     _textBuffer.setCurrentLength(outPtr);
                     return _valueComplete(JsonToken.VALUE_STRING);
                 }
                 break;
             }
-            ++ptr;
+            _inputPtr++;
             outBuf[outPtr++] = (char) c;
         }
         _textBuffer.setCurrentLength(outPtr);
-        _inputPtr = ptr;
         return _finishRegularString();
     }
 
@@ -2450,16 +2464,13 @@ public class NonBlockingJsonParser
 
         char[] outBuf = _textBuffer.getBufferWithoutReset();
         int outPtr = _textBuffer.getCurrentSegmentSize();
-        int ptr = _inputPtr;
-        final int safeEnd = _inputEnd - 5; // longest escape is 6 chars
         
         main_loop:
         while (true) {
             // Then the tight ASCII non-funny-char loop:
             ascii_loop:
             while (true) {
-                if (ptr >= _inputEnd) {
-                    _inputPtr = ptr;
+                if (!_hasAvailable(1)) {
                     _minorState = MINOR_VALUE_STRING;
                     _textBuffer.setCurrentLength(outPtr);
                     return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -2468,9 +2479,8 @@ public class NonBlockingJsonParser
                     outBuf = _textBuffer.finishCurrentSegment();
                     outPtr = 0;
                 }
-                final int max = Math.min(_inputEnd, (ptr + (outBuf.length - outPtr)));
-                while (ptr < max) {
-                    c = inputBuffer[ptr++] & 0xFF;
+                while(_hasAvailable(1) && outPtr < outBuf.length) {
+                    c = inputBuffer[_inputPtr++] & 0xFF;
                     if (codes[c] != 0) {
                         break ascii_loop;
                     }
@@ -2479,39 +2489,34 @@ public class NonBlockingJsonParser
             }
             // Ok: end marker, escape or multi-byte?
             if (c == INT_QUOTE) {
-                _inputPtr = ptr;
                 _textBuffer.setCurrentLength(outPtr);
                 return _valueComplete(JsonToken.VALUE_STRING);
             }
             // If possibly split, use off-lined longer version
-            if (ptr >= safeEnd) {
-                _inputPtr = ptr;
+            if (!_hasAvailable(6)) { // longest escape is 6 chars
                 _textBuffer.setCurrentLength(outPtr);
-                if (!_decodeSplitMultiByte(c, codes[c], ptr < _inputEnd)) {
+                if (!_decodeSplitMultiByte(c, codes[c], _hasAvailable(1))) {
                     _minorStateAfterSplit = MINOR_VALUE_STRING;
                     return (_currToken = JsonToken.NOT_AVAILABLE);
                 }
                 outBuf = _textBuffer.getBufferWithoutReset();
                 outPtr = _textBuffer.getCurrentSegmentSize();
-                ptr = _inputPtr;
                 continue main_loop;
             }
             // otherwise use inlined
             switch (codes[c]) {
             case 1: // backslash
-                _inputPtr = ptr;
                 c = _decodeFastCharEscape(); // since we know it's not split
-                ptr = _inputPtr;
                 break;
             case 2: // 2-byte UTF
-                c = _decodeUTF8_2(c, _inputBuffer[ptr++]);
+                c = _decodeUTF8_2(c, _inputBuffer[_inputPtr++]);
                 break;
             case 3: // 3-byte UTF
-                c = _decodeUTF8_3(c, _inputBuffer[ptr++], _inputBuffer[ptr++]);
+                c = _decodeUTF8_3(c, _inputBuffer[_inputPtr++], _inputBuffer[_inputPtr++]);
                 break;
             case 4: // 4-byte UTF
-                c = _decodeUTF8_4(c, _inputBuffer[ptr++], _inputBuffer[ptr++],
-                        _inputBuffer[ptr++]);
+                c = _decodeUTF8_4(c, _inputBuffer[_inputPtr++], _inputBuffer[_inputPtr++],
+                        _inputBuffer[_inputPtr++]);
                 // Let's add first part right away:
                 outBuf[outPtr++] = (char) (0xD800 | (c >> 10));
                 if (outPtr >= outBuf.length) {
@@ -2542,17 +2547,15 @@ public class NonBlockingJsonParser
 
     protected JsonToken _startAposString() throws JacksonException
     {
-        int ptr = _inputPtr;
         int outPtr = 0;
         char[] outBuf = _textBuffer.emptyAndGetCurrentSegment();
         final int[] codes = _icUTF8;
 
-        final int max = Math.min(_inputEnd, (ptr + outBuf.length));
         final byte[] inputBuffer = _inputBuffer;
-        while (ptr < max) {
-            int c = (int) inputBuffer[ptr] & 0xFF;
+        while (_hasAvailable(1) && outPtr < outBuf.length) {
+            int c = (int) inputBuffer[_inputPtr] & 0xFF;
             if (c == INT_APOS) {
-                _inputPtr = ptr+1;
+                _inputPtr++;
                 _textBuffer.setCurrentLength(outPtr);
                 return _valueComplete(JsonToken.VALUE_STRING);
             }
@@ -2560,11 +2563,10 @@ public class NonBlockingJsonParser
             if (codes[c] != 0) {
                 break;
             }
-            ++ptr;
+            _inputPtr++;
             outBuf[outPtr++] = (char) c;
         }
         _textBuffer.setCurrentLength(outPtr);
-        _inputPtr = ptr;
         return _finishAposString();
     }
 
@@ -2576,15 +2578,12 @@ public class NonBlockingJsonParser
 
         char[] outBuf = _textBuffer.getBufferWithoutReset();
         int outPtr = _textBuffer.getCurrentSegmentSize();
-        int ptr = _inputPtr;
-        final int safeEnd = _inputEnd - 5; // longest escape is 6 chars
         
         main_loop:
         while (true) {
             ascii_loop:
             while (true) {
-                if (ptr >= _inputEnd) {
-                    _inputPtr = ptr;
+                if (!_hasAvailable(1)) {
                     _minorState = MINOR_VALUE_APOS_STRING;
                     _textBuffer.setCurrentLength(outPtr);
                     return (_currToken = JsonToken.NOT_AVAILABLE);
@@ -2593,14 +2592,12 @@ public class NonBlockingJsonParser
                     outBuf = _textBuffer.finishCurrentSegment();
                     outPtr = 0;
                 }
-                final int max = Math.min(_inputEnd, (ptr + (outBuf.length - outPtr)));
-                while (ptr < max) {
-                    c = inputBuffer[ptr++] & 0xFF;
+                while (_hasAvailable(1) && outPtr < outBuf.length) {
+                    c = inputBuffer[_inputPtr++] & 0xFF;
                     if ((codes[c] != 0) && (c != INT_QUOTE)) {
                         break ascii_loop;
                     }
                     if (c == INT_APOS) {
-                        _inputPtr = ptr;
                         _textBuffer.setCurrentLength(outPtr);
                         return _valueComplete(JsonToken.VALUE_STRING);
                     }
@@ -2609,34 +2606,30 @@ public class NonBlockingJsonParser
             }
             // Escape or multi-byte?
             // If possibly split, use off-lined longer version
-            if (ptr >= safeEnd) {
-                _inputPtr = ptr;
+            if (!_hasAvailable(6)) { // longest escape is 6 chars
                 _textBuffer.setCurrentLength(outPtr);
-                if (!_decodeSplitMultiByte(c, codes[c], ptr < _inputEnd)) {
+                if (!_decodeSplitMultiByte(c, codes[c], _hasAvailable(1))) {
                     _minorStateAfterSplit = MINOR_VALUE_APOS_STRING;
                     return (_currToken = JsonToken.NOT_AVAILABLE);
                 }
                 outBuf = _textBuffer.getBufferWithoutReset();
                 outPtr = _textBuffer.getCurrentSegmentSize();
-                ptr = _inputPtr;
                 continue main_loop;
             }
             // otherwise use inlined
             switch (codes[c]) {
             case 1: // backslash
-                _inputPtr = ptr;
                 c = _decodeFastCharEscape(); // since we know it's not split
-                ptr = _inputPtr;
                 break;
             case 2: // 2-byte UTF
-                c = _decodeUTF8_2(c, _inputBuffer[ptr++]);
+                c = _decodeUTF8_2(c, _inputBuffer[_inputPtr++]);
                 break;
             case 3: // 3-byte UTF
-                c = _decodeUTF8_3(c, _inputBuffer[ptr++], _inputBuffer[ptr++]);
+                c = _decodeUTF8_3(c, _inputBuffer[_inputPtr++], _inputBuffer[_inputPtr++]);
                 break;
             case 4: // 4-byte UTF
-                c = _decodeUTF8_4(c, _inputBuffer[ptr++], _inputBuffer[ptr++],
-                        _inputBuffer[ptr++]);
+                c = _decodeUTF8_4(c, _inputBuffer[_inputPtr++], _inputBuffer[_inputPtr++],
+                        _inputBuffer[_inputPtr++]);
                 // Let's add first part right away:
                 outBuf[outPtr++] = (char) (0xD800 | (c >> 10));
                 if (outPtr >= outBuf.length) {
@@ -2726,7 +2719,7 @@ public class NonBlockingJsonParser
                 _reportInvalidOther(next & 0xFF, _inputPtr);
             }
             prev = (prev << 6) | (next & 0x3F);
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_VALUE_STRING_UTF8_3;
                 _pending32 = prev;
                 _pendingBytes = 2;
@@ -2751,7 +2744,7 @@ public class NonBlockingJsonParser
                 _reportInvalidOther(next & 0xFF, _inputPtr);
             }
             prev = (prev << 6) | (next & 0x3F);
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_VALUE_STRING_UTF8_4;
                 _pending32 = prev;
                 _pendingBytes = 2;
@@ -2765,7 +2758,7 @@ public class NonBlockingJsonParser
                 _reportInvalidOther(next & 0xFF, _inputPtr);
             }
             prev = (prev << 6) | (next & 0x3F);
-            if (_inputPtr >= _inputEnd) {
+            if (!_hasAvailable(1)) {
                 _minorState = MINOR_VALUE_STRING_UTF8_4;
                 _pending32 = prev;
                 _pendingBytes = 3;
@@ -2793,8 +2786,7 @@ public class NonBlockingJsonParser
 
     private final int _decodeCharEscape() throws JacksonException
     {
-        int left = _inputEnd - _inputPtr;
-        if (left < 5) { // offline boundary-checking case:
+        if (!_hasAvailable(5)) { // offline boundary-checking case:
             return _decodeSplitEscaped(0, -1);
         }
         return _decodeFastCharEscape();
